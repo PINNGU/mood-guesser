@@ -5,6 +5,7 @@ import json
 import os
 
 from src.utils.dataset_loader import load_data
+from src.utils.evaluator import generate_report
 from src.platform.client import PlatformClient
 
 
@@ -62,7 +63,10 @@ def get_latest_model(coordinator_url):
 def run_experiment(num_rounds, local_epochs, coordinator_urls):
     """Run the federated learning experiment."""
     
-    # Load and split dataset
+    start_time = time.time()
+    
+    os.makedirs('results', exist_ok=True)
+    
     print("Loading dataset...")
     platform_data, label_encoder, feature_cols, scaler = load_data(n_platforms=5)
     input_dim = len(feature_cols)
@@ -97,6 +101,8 @@ def run_experiment(num_rounds, local_epochs, coordinator_urls):
         'final_accuracies': [],
         'average_accuracies': []
     }
+    
+    round_history = []
     
     # Run training rounds
     print(f"\n{'='*60}")
@@ -156,6 +162,12 @@ def run_experiment(num_rounds, local_epochs, coordinator_urls):
         results['rounds'].append(round_results)
         results['average_accuracies'].append(avg_accuracy)
         
+        history_entry = {'round': round_num}
+        for p in round_results['platforms']:
+            history_entry[f"platform_{p['platform_id']}_acc"] = p['accuracy']
+        history_entry['average_accuracy'] = avg_accuracy
+        round_history.append(history_entry)
+        
         # Print CRDT summary every 5 rounds
         if round_num % 5 == 0:
             print(f"\n--- CRDT Summary (Round {round_num}) ---")
@@ -181,11 +193,49 @@ def run_experiment(num_rounds, local_epochs, coordinator_urls):
     
     # Print CRDT final summary
     print(f"\n--- Final CRDT Summary ---")
+    crdt_states = {}
     for url in coordinator_urls:
         summary = get_crdt_summary(url)
+        crdt_states[url] = summary
         if summary:
             print(f"  {url}:")
             print(f"    {json.dumps(summary, indent=4)}")
+    
+    training_time = time.time() - start_time
+    
+    model_version = None
+    for url in coordinator_urls:
+        model_response = get_latest_model(url)
+        if model_response and 'model_version' in model_response:
+            model_version = model_response['model_version']
+            break
+    
+    final_results = {
+        'round_history': round_history,
+        'final_accuracies': {f'platform_{i}': acc for i, acc in enumerate(final_accuracies)},
+        'average_accuracy': final_avg,
+        'training_time': training_time,
+        'crdt_states': crdt_states,
+        'model_version': model_version,
+        'total_rounds': num_rounds
+    }
+    
+    with open('results/experiment_results.json', 'w') as f:
+        json.dump(final_results, f, indent=2)
+    
+    generate_report({
+        'federated_accuracy': final_avg / 100,
+        'num_rounds': num_rounds,
+        'num_clients': len(platforms),
+        'class_labels': list(label_encoder.classes_)
+    })
+    
+    print("\n" + "=" * 60)
+    print("Experiment completed!")
+    print(f"Final average accuracy: {final_avg:.1f}%")
+    print("Results saved to results/")
+    print("View detailed report: results/report.txt")
+    print("=" * 60)
     
     return results
 
